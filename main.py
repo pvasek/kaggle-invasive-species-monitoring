@@ -3,7 +3,6 @@
 from __future__ import print_function, division
 
 import os
-import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -11,6 +10,7 @@ from torch.optim import lr_scheduler
 from torch.autograd import Variable
 from torchvision import datasets, models, transforms
 from utils import align_train_files, pickup_valiation_data
+import csv
 import time
 from image_folder import ImageFolder2 
 
@@ -20,7 +20,13 @@ train_labels = os.path.join(data_root, 'train_labels.csv')
 train_dir = os.path.join(data_root, 'train')
 val_dir = os.path.join(data_root, 'val')
 test_dir = os.path.join(data_root, 'test')
-result_file1 = os.path.join(model_result_dir, 'result1_squeezenet1_1.torchdict')
+
+model_ft = models.resnet152(pretrained=True)
+model_name = 'resnet152'
+result_file1 = os.path.join(model_result_dir,  '{0}_params3.torchdict'.format(model_name))
+time_part = time.strftime("%Y%m%d_%H%M%S")
+current_dir = os.path.dirname(os.path.realpath(__file__))
+csv_file_name = os.path.join(current_dir, 'result_{0}_{1}.csv'.format(model_name, time_part))
 
 # resnet50 -  0.993478
 # resnet101 - 0.991304
@@ -154,26 +160,35 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25, best_call
 def evaluate_model(model):
     model.eval()
     softmax = nn.Softmax()
-    for i, ((inputs, _), paths) in enumerate(test_loader):
-        print('evaluate_model i: {}'.format(i))
-        # wrap them in Variable
-        if use_gpu:
-            inputs = Variable(inputs.cuda())
-        else:
-            inputs = Variable(inputs)
+    list = []
+    print('name,invasive')
+    with open(csv_file_name, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile, delimiter=',')
+        writer.writerow(['name', 'invasive'])
+        for i, ((inputs, _), paths) in enumerate(test_loader):
+            # wrap them in Variable
+            if use_gpu:
+                inputs = Variable(inputs.cuda())
+            else:
+                inputs = Variable(inputs)
 
-        # forward
-        outputs = model(inputs)
-        # _, predictions = torch.max(outputs.data, 1)
-        # print(predictions)
-        print([os.path.splitext(os.path.basename(x))[0] for x in paths[0]])
-        print(softmax(outputs.data)[:, 1])
+            # forward
+            outputs = model(inputs)
+            # _, predictions = torch.max(outputs.data, 1)
+            # print(predictions)
+            file_names = [os.path.splitext(os.path.basename(x))[0] for x in paths[0]]
+            predictions = softmax(outputs.data)[:, 1]
+            
+            for file_name, prediction in zip(file_names, predictions.data.tolist()):
+                list.append([file_name, prediction])
+                writer.writerow([file_name, prediction])
+                print('{},{}'.format(file_name, prediction))
 
+    return list
 
-def save_model(model):
+def save_model(model: nn.Module):
     torch.save(model.state_dict(), result_file1)
 
-model_ft = models.resnet18(pretrained=True)
 num_ftrs = model_ft.fc.in_features
 model_ft.fc = nn.Linear(num_ftrs, 2)
 
@@ -186,14 +201,15 @@ criterion = nn.CrossEntropyLoss()
 optimizer_ft = optim.SGD(model_ft.parameters(), lr=0.001, momentum=0.9)
 
 # Decay LR by a factor of 0.1 every 7 epochs
-exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
+exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=10, gamma=0.1)
 
 if os.path.exists(result_file1):
     print('loading weights from file: {0}'.format(result_file1))
     model_ft.load_state_dict(torch.load(result_file1))
-    evaluate_model(model_ft)
-
 else:
     print('starting training model')
     model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
-                       num_epochs=25, best_callback=save_model)
+                       num_epochs=100, best_callback=save_model)
+
+print('evaluating...')
+evaluate_model(model_ft)
